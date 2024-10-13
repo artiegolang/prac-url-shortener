@@ -1,16 +1,16 @@
 package main
 
 import (
-	"net/http"
+	"github.com/gin-gonic/gin"
 	"practicum-middle/pkg/handler"
 )
 
 func main() {
-	mux := http.NewServeMux()
+	router := gin.Default()
 
-	mux.HandleFunc("/", handler.RootHandler)
-
-	if err := http.ListenAndServe(":8085", mux); err != nil {
+	router.POST("/", handler.HandleShortenURL)
+	router.GET("/:shortID", handler.HandleRedirect)
+	if err := router.Run(":8085"); err != nil {
 		panic(err)
 	}
 }

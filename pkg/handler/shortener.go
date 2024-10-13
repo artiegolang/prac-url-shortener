@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"github.com/gin-gonic/gin"
 	"io"
 	"net/http"
 	"sync"
@@ -11,11 +12,11 @@ var (
 	Mu       sync.RWMutex
 )
 
-func HandleRedirect(w http.ResponseWriter, r *http.Request) {
-	shortID := r.URL.Path[1:]
+func HandleRedirect(c *gin.Context) {
+	shortID := c.Param("shortID")
 
 	if shortID == "" {
-		http.Error(w, "Bad Request", http.StatusBadRequest)
+		c.String(http.StatusBadRequest, "Bad Request")
 		return
 	}
 
@@ -24,22 +25,22 @@ func HandleRedirect(w http.ResponseWriter, r *http.Request) {
 	Mu.RUnlock()
 
 	if !ok {
-		http.Error(w, "Not Found", http.StatusNotFound)
+		c.String(http.StatusNotFound, "Not Found")
 		return
 	}
 
-	http.Redirect(w, r, longURL, http.StatusFound)
+	c.Redirect(http.StatusMovedPermanently, longURL)
 }
 
-func HandleShortenURL(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Content-Type") != "text/plain" {
-		http.Error(w, "Bad Request", http.StatusBadRequest)
+func HandleShortenURL(c *gin.Context) {
+	if c.GetHeader("Content-Type") != "text/plain" {
+		c.String(http.StatusBadRequest, "Bad Request")
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(c.Request.Body)
 	if err != nil || len(body) == 0 {
-		http.Error(w, "Bad Request", http.StatusBadRequest)
+		c.String(http.StatusBadRequest, "Bad Request")
 		return
 	}
 	longURL := string(body)
@@ -52,8 +53,5 @@ func HandleShortenURL(w http.ResponseWriter, r *http.Request) {
 
 	shortURL := "http://localhost:8085/" + shortID
 
-	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(http.StatusCreated)
-
-	w.Write([]byte(shortURL))
+	c.String(http.StatusCreated, shortURL)
 }
