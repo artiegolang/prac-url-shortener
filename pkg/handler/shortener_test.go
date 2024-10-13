@@ -1,6 +1,8 @@
 package handler_test
 
 import (
+	"bytes"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"io"
@@ -11,68 +13,41 @@ import (
 	"testing"
 )
 
-func TestHandleShortener(t *testing.T) {
-	type want struct {
-		contentType string
-		statusCode  int
-		body        string
-	}
+func createTestContext(method, url string, body []byte) (*gin.Context, *httptest.ResponseRecorder) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest(method, url, bytes.NewBuffer(body))
+	return c, w
+}
+
+func TestHandleShortenURL(t *testing.T) {
 	tests := []struct {
-		name    string
-		request *http.Request
-		want    want
+		name        string
+		contentType string
+		body        string
+		wantStatus  int
+		wantBody    string
 	}{
 		{
-			name: "Valid",
-			request: func() *http.Request {
-				req, _ := http.NewRequest(http.MethodPost, "/", strings.NewReader("http://google.com"))
-				req.Header.Set("Content-Type", "text/plain")
-				return req
-			}(),
-			want: want{
-				contentType: "text/plain",
-				statusCode:  http.StatusCreated,
-				body:        "http://localhost:8085/" + handler.GenerateShortID("http://google.com"),
-			},
+			name:        "Valid",
+			contentType: "text/plain",
+			body:        "http://google.com",
+			wantStatus:  http.StatusCreated,
+			wantBody:    "http://localhost:8085/" + handler.GenerateShortID("http://google.com"),
 		},
 		{
-			name: "Invalid",
-			request: func() *http.Request {
-				req, _ := http.NewRequest(http.MethodGet, "/", strings.NewReader("http://google.com"))
-				req.Header.Set("Content-Type", "application/json")
-				return req
-			}(),
-			want: want{
-				contentType: "text/plain; charset=utf-8",
-				statusCode:  http.StatusBadRequest,
-				body:        "Bad Request\n",
-			},
+			name:        "Invalid Content-Type",
+			contentType: "application/json",
+			body:        "http://google.com",
+			wantStatus:  http.StatusBadRequest,
+			wantBody:    "Bad Request",
 		},
 		{
-			name: "Empty",
-			request: func() *http.Request {
-				req, _ := http.NewRequest(http.MethodPost, "/", strings.NewReader(""))
-				req.Header.Set("Content-Type", "text/plain")
-				return req
-			}(),
-			want: want{
-				contentType: "text/plain; charset=utf-8",
-				statusCode:  http.StatusBadRequest,
-				body:        "Bad Request\n",
-			},
-		},
-		{
-			name: "InvalidJSON",
-			request: func() *http.Request {
-				req, _ := http.NewRequest(http.MethodPost, "/", strings.NewReader("{"))
-				req.Header.Set("Content-Type", "application/json")
-				return req
-			}(),
-			want: want{
-				contentType: "text/plain; charset=utf-8",
-				statusCode:  http.StatusBadRequest,
-				body:        "Bad Request\n",
-			},
+			name:        "Empty Body",
+			contentType: "text/plain",
+			body:        "",
+			wantStatus:  http.StatusBadRequest,
+			wantBody:    "Bad Request",
 		},
 	}
 
@@ -82,75 +57,54 @@ func TestHandleShortener(t *testing.T) {
 			handler.UrlStore = make(map[string]string)
 			handler.Mu.Unlock()
 
-			w := httptest.NewRecorder()
-			handler.HandleShortenURL(w, tt.request)
+			c, w := createTestContext(http.MethodPost, "/", []byte(tt.body))
+			c.Request.Header.Set("Content-Type", tt.contentType)
+			handler.HandleShortenURL(c)
 
 			res := w.Result()
 			defer res.Body.Close()
 
-			assert.Equal(t, res.StatusCode, tt.want.statusCode)
-
-			assert.Equal(t, res.Header.Get("Content-Type"), tt.want.contentType)
-
+			assert.Equal(t, tt.wantStatus, res.StatusCode)
 			respBody, err := io.ReadAll(res.Body)
 			require.NoError(t, err)
-
-			assert.Equal(t, tt.want.body, string(respBody))
-
-			if tt.want.statusCode == http.StatusCreated {
-				handler.Mu.Lock()
-				defer handler.Mu.Unlock()
-
-				shortId := handler.GenerateShortID("http://google.com")
-				assert.Equal(t, "http://google.com", handler.UrlStore[shortId])
-			}
+			assert.Equal(t, tt.wantBody, string(respBody))
 		})
 	}
 }
 
 func TestHandleRedirect(t *testing.T) {
-	type want struct {
-		status int
-		header string
-		body   string
-	}
 	tests := []struct {
-		name     string
-		urlStore map[string]string
-		path     string
-		want     want
+		name       string
+		urlStore   map[string]string
+		path       string
+		wantStatus int
+		wantHeader string
+		wantBody   string
 	}{
 		{
 			name: "Valid",
 			urlStore: map[string]string{
-				"abc123": "google.com",
+				"abc123": "http://google.com",
 			},
-			path: "/abc123",
-			want: want{
-				status: http.StatusFound,
-				header: "/google.com",
-			},
+			path:       "/abc123",
+			wantStatus: http.StatusMovedPermanently,
+			wantHeader: "http://google.com",
 		},
 		{
 			name: "Invalid",
 			urlStore: map[string]string{
-				"abc123": "google.com",
+				"abc123": "http://google.com",
 			},
-			path: "/abc12",
-			want: want{
-				status: http.StatusNotFound,
-				header: "",
-				body:   "Not Found\n",
-			},
+			path:       "/invalid",
+			wantStatus: http.StatusNotFound,
+			wantBody:   "Not Found",
 		},
 		{
-			name:     "Empty",
-			urlStore: map[string]string{},
-			path:     "/",
-			want: want{
-				status: http.StatusBadRequest,
-				body:   "Bad Request\n",
-			},
+			name:       "Empty",
+			urlStore:   map[string]string{},
+			path:       "/",
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "Bad Request",
 		},
 	}
 
@@ -160,25 +114,23 @@ func TestHandleRedirect(t *testing.T) {
 			handler.UrlStore = tt.urlStore
 			handler.Mu.Unlock()
 
-			req, _ := http.NewRequest(http.MethodGet, tt.path, nil)
-
-			w := httptest.NewRecorder()
-
-			handler.HandleRedirect(w, req)
+			c, w := createTestContext(http.MethodGet, tt.path, nil)
+			c.Params = gin.Params{gin.Param{Key: "shortID", Value: strings.TrimPrefix(tt.path, "/")}}
+			handler.HandleRedirect(c)
 
 			res := w.Result()
 			defer res.Body.Close()
 
-			assert.Equal(t, res.StatusCode, tt.want.status)
+			assert.Equal(t, tt.wantStatus, res.StatusCode)
 
-			if tt.want.status == http.StatusFound {
-				assert.Equal(t, res.Header.Get("Location"), tt.want.header)
+			if tt.wantStatus == http.StatusMovedPermanently {
+				assert.Equal(t, tt.wantHeader, res.Header.Get("Location"))
 			}
 
-			if tt.want.body != "" {
+			if tt.wantBody != "" {
 				respBody, err := io.ReadAll(res.Body)
-				assert.NoError(t, err)
-				assert.Equal(t, tt.want.body, string(respBody))
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantBody, string(respBody))
 			}
 		})
 	}

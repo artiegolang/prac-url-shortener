@@ -1,18 +1,21 @@
 package handler
 
-import "net/http"
+import (
+	"github.com/gin-gonic/gin"
+	"net/http"
+)
 
-func RootHandler(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
+func RootHandler(c *gin.Context) {
+	switch c.Request.Method {
 	case http.MethodPost:
-		if r.URL.Path == "/" {
-			HandleShortenURL(w, r)
+		if c.Request.URL.Path == "/" {
+			HandleShortenURL(c)
 		} else {
-			http.Error(w, "Bad Request", http.StatusBadRequest)
+			c.String(http.StatusBadRequest, "Bad Request")
 		}
 	case http.MethodGet:
-		HandleRedirect(w, r)
+		HandleRedirect(c)
 	default:
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		c.String(http.StatusMethodNotAllowed, "Method Not Allowed")
 	}
 }
