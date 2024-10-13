@@ -4,6 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"io"
 	"net/http"
+	"practicum-middle/config"
 	"sync"
 )
 
@@ -12,7 +13,15 @@ var (
 	Mu       sync.RWMutex
 )
 
-func HandleRedirect(c *gin.Context) {
+type Handler struct {
+	opt *config.Options
+}
+
+func NewHandler(opt *config.Options) *Handler {
+	return &Handler{opt: opt}
+}
+
+func (h *Handler) HandleRedirect(c *gin.Context) {
 	shortID := c.Param("shortID")
 
 	if shortID == "" {
@@ -32,7 +41,7 @@ func HandleRedirect(c *gin.Context) {
 	c.Redirect(http.StatusMovedPermanently, longURL)
 }
 
-func HandleShortenURL(c *gin.Context) {
+func (h *Handler) HandleShortenURL(c *gin.Context) {
 	if c.GetHeader("Content-Type") != "text/plain" {
 		c.String(http.StatusBadRequest, "Bad Request")
 		return
@@ -51,7 +60,9 @@ func HandleShortenURL(c *gin.Context) {
 	UrlStore[shortID] = longURL
 	Mu.Unlock()
 
-	shortURL := "http://localhost:8085/" + shortID
+	// shortURL := "http://localhost:8085/" + shortID
+
+	shortURL := h.opt.BaseURL + "/" + shortID
 
 	c.String(http.StatusCreated, shortURL)
 }
