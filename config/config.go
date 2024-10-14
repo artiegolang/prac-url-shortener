@@ -6,8 +6,9 @@ import (
 )
 
 type Options struct {
-	FlagRunAddr string
-	BaseURL     string
+	FlagRunAddr     string
+	BaseURL         string
+	FileStoragePath string
 }
 
 func ParseFlags() *Options {
@@ -16,10 +17,12 @@ func ParseFlags() *Options {
 	// Устанавливаем значения по умолчанию
 	defaultRunAddr := ":8888"
 	defaultBaseURL := "http://localhost:8888"
+	defaultFileStoragePath := "D:/practicum-middle/short-url-db.json"
 
 	// Регистрируем флаги командной строки
 	flag.StringVar(&opts.FlagRunAddr, "a", defaultRunAddr, "address and port to run server")
 	flag.StringVar(&opts.BaseURL, "b", defaultBaseURL, "base URL")
+	flag.StringVar(&opts.FileStoragePath, "f", defaultFileStoragePath, "file storage path")
 
 	// Парсим флаги
 	flag.Parse()
@@ -37,6 +40,12 @@ func ParseFlags() *Options {
 	} else if flag.Lookup("b").Value.String() != defaultBaseURL {
 		// Если переменная окружения не указана, используем флаг, если он был изменён
 		opts.BaseURL = flag.Lookup("b").Value.String()
+	}
+
+	if envFileStoragePath := os.Getenv("FILE_STORAGE_PATH"); envFileStoragePath != "" {
+		opts.FileStoragePath = envFileStoragePath
+	} else if flag.Lookup("f").Value.String() != defaultFileStoragePath {
+		opts.FileStoragePath = flag.Lookup("f").Value.String()
 	}
 
 	return opts

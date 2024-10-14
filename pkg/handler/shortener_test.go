@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"practicum-middle/config"
+	"practicum-middle/internal/logger"
 	"practicum-middle/pkg/handler"
 	"strings"
 	"testing"
@@ -18,6 +20,59 @@ func createTestContext(method, url string, body []byte) (*gin.Context, *httptest
 	c, _ := gin.CreateTestContext(w)
 	c.Request, _ = http.NewRequest(method, url, bytes.NewBuffer(body))
 	return c, w
+}
+
+func TestHandleShortenURLJSON(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		wantStatus  int
+		wantBody    string
+	}{
+		{
+			name:        "Valid",
+			contentType: "application/json",
+			body:        `{"url": "http://google.com"}`,
+			wantStatus:  http.StatusCreated,
+			wantBody:    `{"result":"http://localhost:8085/` + handler.GenerateShortID("http://google.com") + `"}`,
+		},
+		{
+			name:        "Invalid JSON",
+			contentType: "application/json",
+			body:        `{"url": "http://google.com"`,
+			wantStatus:  http.StatusBadRequest,
+			wantBody:    `{"error": "Bad Request"}`,
+		},
+		{
+			name:        "Missing URL Field",
+			contentType: "application/json",
+			body:        `{"wrong_field": "http://google.com"}`,
+			wantStatus:  http.StatusBadRequest,
+			wantBody:    `{"error": "Bad Request"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler.Mu.Lock()
+			handler.UrlStore = make(map[string]string)
+			handler.Mu.Unlock()
+
+			c, w := createTestContext(http.MethodPost, "/api/shorten", []byte(tt.body))
+			c.Request.Header.Set("Content-Type", tt.contentType)
+			h := handler.NewHandler(&config.Options{BaseURL: "http://localhost:8085"}, logger.NewLogger())
+			h.HandleShortenURLJSON(c)
+
+			res := w.Result()
+			defer res.Body.Close()
+
+			assert.Equal(t, tt.wantStatus, res.StatusCode)
+			respBody, err := io.ReadAll(res.Body)
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.wantBody, string(respBody))
+		})
+	}
 }
 
 func TestHandleShortenURL(t *testing.T) {
@@ -59,7 +114,8 @@ func TestHandleShortenURL(t *testing.T) {
 
 			c, w := createTestContext(http.MethodPost, "/", []byte(tt.body))
 			c.Request.Header.Set("Content-Type", tt.contentType)
-			handler.HandleShortenURL(c)
+			h := handler.NewHandler(&config.Options{BaseURL: "http://localhost:8085"}, logger.NewLogger())
+			h.HandleShortenURL(c)
 
 			res := w.Result()
 			defer res.Body.Close()
@@ -116,7 +172,8 @@ func TestHandleRedirect(t *testing.T) {
 
 			c, w := createTestContext(http.MethodGet, tt.path, nil)
 			c.Params = gin.Params{gin.Param{Key: "shortID", Value: strings.TrimPrefix(tt.path, "/")}}
-			handler.HandleRedirect(c)
+			h := handler.NewHandler(&config.Options{BaseURL: "http://localhost:8085"}, logger.NewLogger())
+			h.HandleRedirect(c)
 
 			res := w.Result()
 			defer res.Body.Close()
