@@ -1,13 +1,13 @@
 package controller
 
 import (
-	"fmt"
 	"github.com/gin-gonic/gin"
-	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 	"practicum-middle/config"
 	"practicum-middle/internal/logger"
 	"practicum-middle/internal/middleware"
+	"practicum-middle/internal/repository"
+	"practicum-middle/pkg/database"
 	"practicum-middle/pkg/handler"
 )
 
@@ -17,38 +17,29 @@ type BaseController struct {
 	Logger *zap.SugaredLogger
 }
 
-func NewBaseController() *BaseController {
-	// Load environment variables
-	err := godotenv.Load()
-	if err != nil {
-		fmt.Println("Error loading .env file:", err)
-	} else {
-		fmt.Println("Environment variables loaded from .env")
-	}
-
-	// Parse flags and environment variables
-	opt := config.ParseFlags()
-
-	// Initialize the logger
+func NewBaseController(db *database.DB, opt *config.Options) *BaseController {
+	// Инициализация логгера
 	log := logger.NewLogger()
 
-	// Initialize the router
-	router := gin.New()
+	// Инициализация репозитория
+	urlRepo := repository.NewURLRepository(db)
 
+	// Инициализация хендлера
+	h := handler.NewHandler(opt, log, urlRepo)
+
+	// Инициализация роутера
+	router := gin.New()
 	router.Use(middleware.GzipDecompress())
 	router.Use(middleware.GzipCompress())
-
-	// Add the request logger middleware
 	router.Use(middleware.RequestLogger(log))
 	router.Use(gin.Recovery())
 
-	// Initialize handlers
-	h := handler.NewHandler(opt, log, opt.FileStoragePath)
-
-	// Set up routes
+	// Настройка маршрутов
 	router.POST("/", h.HandleShortenURL)
 	router.GET("/:shortID", h.HandleRedirect)
 	router.POST("/api/shorten", h.HandleShortenURLJSON)
+	router.GET("/ping", h.PingDB)
+	router.POST("/api/shorten/batch", h.HandleShortenURLBatch)
 
 	return &BaseController{
 		Router: router,
@@ -58,6 +49,6 @@ func NewBaseController() *BaseController {
 }
 
 func (bc *BaseController) Run() error {
-	bc.Logger.Info("Starting the server on %s", bc.Opt.FlagRunAddr)
-	return bc.Router.Run(bc.Opt.FlagRunAddr)
+	bc.Logger.Infof("Starting the server on %s", bc.Opt.ServerAddress)
+	return bc.Router.Run(bc.Opt.ServerAddress)
 }

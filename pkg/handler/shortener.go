@@ -1,14 +1,13 @@
 package handler
 
+import "C"
 import (
-	"encoding/json"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 	"io"
 	"net/http"
-	"os"
 	"practicum-middle/config"
-	"sync"
+	"practicum-middle/internal/repository"
 )
 
 type URLRecord struct {
@@ -18,78 +17,16 @@ type URLRecord struct {
 }
 
 type Handler struct {
-	opt             *config.Options
-	logger          *zap.SugaredLogger
-	mu              sync.Mutex
-	UrlStore        map[string]string
-	fileStoragePath string
+	opt     *config.Options
+	logger  *zap.SugaredLogger
+	urlRepo *repository.URLRepository
 }
 
-func NewHandler(opt *config.Options, logger *zap.SugaredLogger, filestoragePath string) *Handler {
-	h := &Handler{
-		opt:             opt,
-		logger:          logger,
-		UrlStore:        make(map[string]string),
-		fileStoragePath: opt.FileStoragePath,
-	}
-	h.loadURLsFromFile()
-	return h
-}
-
-func (h *Handler) saveURLsToFile() {
-	if h.fileStoragePath == "" {
-		return
-	}
-
-	file, err := os.Create(h.fileStoragePath)
-	if err != nil {
-		h.logger.Errorf("Error creating file: %v", err)
-		return
-	}
-	defer file.Close()
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	encoder := json.NewEncoder(file)
-	for shortID, longURL := range h.UrlStore {
-		record := URLRecord{
-			UUID:        shortID,
-			ShortURL:    h.opt.BaseURL + "/" + shortID,
-			OriginalURL: longURL,
-		}
-		if err := encoder.Encode(&record); err != nil {
-			h.logger.Errorf("Error encoding record: %v", err)
-		}
-	}
-}
-
-func (h *Handler) loadURLsFromFile() {
-	if h.fileStoragePath == "" {
-		return
-	}
-
-	file, err := os.Open(h.fileStoragePath)
-	if err != nil {
-		h.logger.Errorf("Error opening file: %v", err)
-		return
-	}
-	defer file.Close()
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	decoder := json.NewDecoder(file)
-
-	for {
-		var record URLRecord
-		if err := decoder.Decode(&record); err == io.EOF {
-			break
-		} else if err != nil {
-			h.logger.Errorf("Error decoding record: %v", err)
-			break
-		}
-		h.UrlStore[record.UUID] = record.OriginalURL
+func NewHandler(opt *config.Options, logger *zap.SugaredLogger, urlRepo *repository.URLRepository) *Handler {
+	return &Handler{
+		opt:     opt,
+		logger:  logger,
+		urlRepo: urlRepo,
 	}
 }
 
@@ -112,17 +49,25 @@ func (h *Handler) HandleShortenURLJSON(c *gin.Context) {
 	}
 	shortID := GenerateShortID(longURL)
 
-	h.mu.Lock()
-	h.UrlStore[shortID] = longURL
-	h.mu.Unlock()
+	// Сохранение в базу данных через репозиторий
+	existingShortID, exists, err := h.urlRepo.SaveURL(c.Request.Context(), shortID, longURL)
+	if err != nil {
+		h.logger.Errorf("Error saving URL: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal Server Error"})
+		return
+	}
 
-	shortURL := h.opt.BaseURL + "/" + shortID
+	shortURL := h.opt.BaseURL + "/" + existingShortID
+
+	if exists {
+		// URL уже существует
+		h.logger.Infof("URL already exists for long URL %s", longURL)
+		c.JSON(http.StatusConflict, gin.H{"result": shortURL})
+		return
+	}
 
 	h.logger.Infof("Shortened URL %s for long URL %s", shortURL, longURL)
 	c.JSON(http.StatusCreated, gin.H{"result": shortURL})
-
-	h.saveURLsToFile()
-
 }
 
 func (h *Handler) HandleRedirect(c *gin.Context) {
@@ -134,11 +79,9 @@ func (h *Handler) HandleRedirect(c *gin.Context) {
 		return
 	}
 
-	h.mu.Lock()
-	longURL, ok := h.UrlStore[shortID]
-	h.mu.Unlock()
-
-	if !ok {
+	// Получаем longURL из репозитория
+	longURL, err := h.urlRepo.GetOriginalURL(c.Request.Context(), shortID)
+	if err != nil {
 		h.logger.Infof("Not Found: shortID %s not found", shortID)
 		c.String(http.StatusNotFound, "Not Found")
 		return
@@ -165,16 +108,86 @@ func (h *Handler) HandleShortenURL(c *gin.Context) {
 
 	shortID := GenerateShortID(longURL)
 
-	h.mu.Lock()
-	h.UrlStore[shortID] = longURL
-	h.mu.Unlock()
+	// Сохранение в базу данных
+	existingShortID, exists, err := h.urlRepo.SaveURL(c.Request.Context(), shortID, longURL)
+	if err != nil {
+		h.logger.Errorf("Error saving URL: %v", err)
+		c.String(http.StatusInternalServerError, "Internal Server Error")
+		return
+	}
 
-	// shortURL := "http://localhost:8085/" + shortID
+	shortURL := h.opt.BaseURL + "/" + existingShortID
 
-	shortURL := h.opt.BaseURL + "/" + shortID
+	if exists {
+		// URL уже существует
+		h.logger.Infof("URL already exists for long URL %s", longURL)
+		c.String(http.StatusConflict, shortURL)
+		return
+	}
 
 	h.logger.Infof("Shortened URL %s for long URL %s", shortURL, longURL)
 	c.String(http.StatusCreated, shortURL)
+}
 
-	h.saveURLsToFile()
+func (h *Handler) PingDB(c *gin.Context) {
+	err := h.urlRepo.Ping(c.Request.Context())
+	if err != nil {
+		h.logger.Errorf("Error pinging database: %v", err)
+		c.String(http.StatusInternalServerError, "Internal Server Error")
+		return
+	}
+
+	c.String(http.StatusOK, "OK")
+
+}
+
+func (h *Handler) HandleShortenURLBatch(c *gin.Context) {
+	var requestBody []struct {
+		CorrelationID string `json:"correlation_id" binding:"required"`
+		URL           string `json:"original_url" binding:"required"`
+	}
+
+	if err := c.BindJSON(&requestBody); err != nil {
+		h.logger.Infof("Bad Request: Error binding JSON: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Bad Request"})
+		return
+	}
+
+	if len(requestBody) == 0 {
+		h.logger.Infof("Bad Request: Empty batch")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Bad Request"})
+		return
+	}
+
+	urlPairs := make([]repository.URLPair, len(requestBody))
+	for i, record := range requestBody {
+		shortID := GenerateShortID(record.URL)
+		urlPairs[i] = repository.URLPair{ShortID: shortID, OriginalURL: record.URL}
+	}
+
+	urlMap, err := h.urlRepo.SaveURLsBatch(c.Request.Context(), urlPairs)
+	if err != nil {
+		h.logger.Errorf("Error saving URLs batch: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal Server Error"})
+		return
+	}
+
+	result := make([]struct {
+		CorrelationID string `json:"correlation_id"`
+		ShortURL      string `json:"short_url"`
+	}, len(requestBody))
+
+	for i, record := range requestBody {
+		shortID := urlMap[record.URL]
+		shortURL := h.opt.BaseURL + "/" + shortID
+		result[i] = struct {
+			CorrelationID string `json:"correlation_id"`
+			ShortURL      string `json:"short_url"`
+		}{
+			CorrelationID: record.CorrelationID,
+			ShortURL:      shortURL,
+		}
+	}
+
+	c.JSON(http.StatusCreated, result)
 }
